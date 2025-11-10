@@ -1,14 +1,23 @@
-﻿services:
+﻿version: "3.9"
+services:
   api:
-    build: .
-    image: rmsg-private-chat-api
+    build:
+      context: .
+      dockerfile: ./api/Dockerfile
+    image: rmsg-private-chat-api:latest
+    container_name: rmsg-api
+    env_file:
+      - ./.env
     ports:
-      - "8088:8080"   # API -> health en 8088
-      - "8089:8080"
-    volumes:
-      - ./.env:/app/.env:ro
-      - ./secrets:/app/secrets
-
-
-
-
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+    networks:
+      - rmsg_net
+networks:
+  rmsg_net:
+    driver: bridge
