@@ -1,0 +1,76 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    # sin healthcheck para evitar falsos 'unhealthy'
+ 
+ ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      OLLAMA_KEEP_ALIVE: "20m"
+      OLLAMA_FLASH_ATTENTION: "1"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    # 👇 clave para Windows/WSL cuando Compose no crea /dev/nvidia*
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+
+  api:
+    build: ./server
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_started
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_BASE_URL: http://ollama:11434
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: rmsg_docs
+      EMBEDDINGS_MODEL: nomic-embed-text
+      LLM_MODEL: qwen2.5:7b-instruct
+      CHAT_MODEL: qwen2.5:7b-instruct
+      # OAuth Google (si tu API los usa)
+      GOOGLE_OAUTH_CLIENT_SECRET_PATH: /app/secrets/google/client_secret.json
+      GOOGLE_OAUTH_TOKEN_DIR: /app/secrets/google/tokens
+      GOOGLE_SCOPES_GMAIL: https://www.googleapis.com/auth/gmail.readonly
+      GOOGLE_SCOPES_DRIVE: https://www.googleapis.com/auth/drive.readonly
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./secrets/google:/app/secrets/google
+      - ./.env.local:/app/.env.local
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health | grep -qi ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  qdrant_data:
+  ollama:
+    external: true
+    name: ollama

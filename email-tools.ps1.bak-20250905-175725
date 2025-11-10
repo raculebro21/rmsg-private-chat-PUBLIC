@@ -1,0 +1,530 @@
+﻿function Invoke-Decoder {
+  param([hashtable]$Body)
+
+  $uri = "http://localhost:8099/decode"
+  try {
+    $json = $Body | ConvertTo-Json -Depth 100
+    $resp = Invoke-WebRequest -Uri $uri -Method Post -ContentType "application/json; charset=utf-8" -Body $json
+    if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
+      return [string]$resp.Content
+    }
+  } catch {
+    Write-Verbose "Decoder no disponible: $_"
+  }
+  return $null
+}
+
+function Get-EmailHtml {
+  param([string]$Id)
+
+  chcp 65001 | Out-Null
+  $utf8 = [System.Text.UTF8Encoding]::new($false)
+  [Console]::OutputEncoding = $utf8
+  $OutputEncoding = $utf8
+
+  # 1) Obtén SIEMPRE el MIME completo
+  $mime = Invoke-RestMethod -Uri "http://localhost:8088/gmail/get" `
+    -Method Post -ContentType "application/json" `
+    -Body (@{ id = $Id } | ConvertTo-Json)
+
+  # 2) Decodifica vía decoder desde MIME
+  $rawForDecoder = $null
+if     ($mime -is [string] -and -not $mime.TrimStart().StartsWith('{')) { $rawForDecoder = $mime }
+elseif ($mime.PSObject.Properties['mime']) { $rawForDecoder = [string]$mime.mime }
+elseif ($mime.PSObject.Properties['raw'])  { $rawForDecoder = [string]$mime.raw }
+if ($rawForDecoder) { $decoded = Invoke-Decoder @{ mime = $rawForDecoder } }
+
+  # 3) Fallback: si algo falla, usa get_body pero pasando por el decoder
+  if (-not $decoded) {
+    $bodyResp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/get_body" `
+      -Method Post -ContentType "application/json" `
+      -Body (@{ id = $Id } | ConvertTo-Json)
+
+    if ($bodyResp.html_doc) { $decoded = Invoke-Decoder @{ html_doc = $bodyResp.html_doc } }
+    elseif ($bodyResp.html) { $decoded = Invoke-Decoder @{ html = $bodyResp.html } }
+    elseif ($bodyResp.text) { $decoded = Invoke-Decoder @{ text = $bodyResp.text } }
+  }
+
+  if (-not $decoded) {
+  try {
+    $mimeObj = $mime
+    if ($mime -is [string] -and $mime.TrimStart().StartsWith('{')) { $mimeObj = ConvertFrom-JsonAny $mime }
+    $alt = Get-GmailHtmlOrText -GmailJson $mimeObj
+    if ($alt) { $decoded = $alt }
+  } catch {}
+  if (-not $decoded) { throw "No se pudo obtener contenido HTML para el mensaje $Id." }
+}
+
+  $path = Join-Path $PWD ("email-{0}.html" -f $Id)
+  [System.IO.File]::WriteAllText($path, $decoded, $utf8)
+  Start-Process $path
+  return $path
+}
+
+function Open-LinkedInEmail {
+  $resp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/list" -Method Post -ContentType "application/json" -Body "{}"
+  $msg  = $resp.messages | Where-Object { $_.from -like "*LinkedIn*" -or $_.subject -like "*LinkedIn*" } | Select-Object -First 1
+  if (-not $msg) { throw "No encontré correos de LinkedIn en la primera página." }
+  Get-EmailHtml -Id $msg.id
+}
+function Open-LastEmail {
+  param(
+    [string]$From,
+    [string]$Subject,
+    [string]$Contains,
+    [int]$MaxPages = 3
+  )
+  $tok = $null
+  for ($i = 0; $i -lt $MaxPages; $i++) {
+    $body = @{}
+    if ($tok) { $body.pageToken = $tok }
+    $resp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/list" -Method Post -ContentType "application/json" -Body ($body | ConvertTo-Json)
+    $msgs = $resp.messages
+
+    if ($From)    { $msgs = $msgs | Where-Object { $_.from    -like "*$From*" } }
+    if ($Subject) { $msgs = $msgs | Where-Object { $_.subject -like "*$Subject*" } }
+    if ($Contains){ $msgs = $msgs | Where-Object { $_.snippet -like "*$Contains*" } }
+
+    if ($msgs -and $msgs.Count -gt 0) {
+      return Get-EmailHtml -Id $msgs[0].id
+    }
+    $tok = $resp.nextPageToken
+    if (-not $tok) { break }
+  }
+  throw "No encontré mensajes que coincidan."
+}
+
+function Find-Emails {
+  param(
+    [string]$From,
+    [string]$Subject,
+    [string]$Contains,
+    [int]$MaxPages = 3,
+    [int]$Max = 50
+  )
+  $tok = $null
+  $acc = @()
+  for ($i = 0; $i -lt $MaxPages -and $acc.Count -lt $Max; $i++) {
+    $body = @{}
+    if ($tok) { $body.pageToken = $tok }
+    $resp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/list" -Method Post -ContentType "application/json" -Body ($body | ConvertTo-Json)
+    $page = $resp.messages
+
+    if ($From)    { $page = $page | Where-Object { $_.from    -like "*$From*" } }
+    if ($Subject) { $page = $page | Where-Object { $_.subject -like "*$Subject*" } }
+    if ($Contains){ $page = $page | Where-Object { $_.snippet -like "*$Contains*" } }
+
+    $acc += $page
+    $tok = $resp.nextPageToken
+    if (-not $tok) { break }
+  }
+
+  $acc | Select-Object -First $Max `
+    id, date, from, subject, @{Name='preview'; Expression = { $_.snippet }}
+}
+
+
+# ==== ADDED: Get-MimeById & Get-HeaderValue (clean) ====
+function Get-MimeById {
+  [CmdletBinding()]
+  param([Parameter(Mandatory=$true)][string]$Id)
+
+  try {
+    chcp 65001 | Out-Null
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
+    [Console]::OutputEncoding = $utf8
+    $OutputEncoding = $utf8
+  } catch {}
+
+  $resp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/get" `
+    -Method Post -ContentType "application/json" `
+    -Body (@{ id = $Id } | ConvertTo-Json)
+
+  if ($resp -is [string]) { return $resp }
+  elseif ($resp.mime) { return [string]$resp.mime }
+  elseif ($resp.raw)  { return [string]$resp.raw }
+  elseif ($resp.data) { return [string]$resp.data }
+  else { return ($resp | ConvertTo-Json -Depth 6) }
+}
+
+function Get-HeaderValue {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)][string]$Headers,
+    [Parameter(Mandatory=$true)][string]$Name
+  )
+  # Desplegar continuations (CRLF + WSP)
+  $unfold = $Headers -replace "(\r?\n)[ \t]+", ' '
+  $pattern = '(?mi)^\s*' + [regex]::Escape($Name) + '\s*:\s*(.*)$'
+  $m = [regex]::Match($unfold, $pattern)
+  if ($m.Success) { return ($m.Groups[1].Value.Trim()) }
+  return $null
+}
+# ==== END ADDED ====
+
+function Decode-EncodedWord {
+  param([string]$Text)
+  if ([string]::IsNullOrEmpty($Text)) { return $Text }
+  try { [System.Text.Encoding]::RegisterProvider([System.Text.CodePagesEncodingProvider]::Instance) | Out-Null } catch {}
+
+  $pattern = '(?i)=\?([A-Z0-9._-]+)\?([QB])\?([^?]+)\?='
+  $decoded = [regex]::Replace($Text, $pattern, {
+    param($m)
+    $charset = $m.Groups[1].Value.ToLower()
+    $mode    = $m.Groups[2].Value.ToUpper()
+    $payload = $m.Groups[3].Value
+    if ($charset -eq 'utf8') { $charset = 'utf-8' }
+
+    if ($mode -eq 'Q') {
+      $payload = $payload -replace '_',' '
+      $bytesList = New-Object System.Collections.Generic.List[byte]
+      $i = 0
+      while ($i -lt $payload.Length) {
+        if ($payload[$i] -eq '=') {
+          try {
+            [byte]$b = [Convert]::ToInt32($payload.Substring($i+1,2),16)
+            $bytesList.Add($b); $i += 3
+          } catch { $bytesList.Add([byte][char]'?'); $i += 1 }
+        } else {
+          $bytesList.Add([byte][char]$payload[$i]); $i += 1
+        }
+      }
+      $bytes = $bytesList.ToArray()
+    } else {
+      try { $bytes = [Convert]::FromBase64String($payload) }
+      catch { $bytes = [System.Text.Encoding]::ASCII.GetBytes($payload) }
+    }
+
+    try {
+      switch -Regex ($charset) {
+        '^iso8859-1$' { $encObj = [System.Text.Encoding]::GetEncoding('iso-8859-1'); break }
+        '^latin-?1$'  { $encObj = [System.Text.Encoding]::GetEncoding('iso-8859-1'); break }
+        '^cp1252$'    { $encObj = [System.Text.Encoding]::GetEncoding(1252); break }
+        default       { $encObj = [System.Text.Encoding]::GetEncoding($charset) }
+      }
+    } catch { $encObj = [System.Text.Encoding]::UTF8 }
+
+    try { $dec = $encObj.GetString($bytes) }
+    catch { $dec = [System.Text.Encoding]::UTF8.GetString($bytes) }
+    return $dec
+  })
+  return $decoded
+}
+
+# Fallback mínimo si no existiera Convert-FromMojibake en tu toolkit
+if (-not (Get-Command Convert-FromMojibake -ErrorAction SilentlyContinue)) {
+  function Convert-FromMojibake {
+    param([string]$Text)
+    if (-not $Text) { return $Text }
+    try {
+      [System.Text.Encoding]::RegisterProvider([System.Text.CodePagesEncodingProvider]::Instance) | Out-Null
+      $cp1252 = [System.Text.Encoding]::GetEncoding(1252)
+      $bytes  = $cp1252.GetBytes($Text)
+      return [System.Text.Encoding]::UTF8.GetString($bytes)
+    } catch { return $Text }
+  }
+}
+
+function Fix-HeaderText {
+  param([string]$Text)
+  if ([string]::IsNullOrEmpty($Text)) { return $Text }
+  $t = $Text -replace "(\r?\n)[ \t]+", ' '   # unfold
+  $t = Decode-EncodedWord $t                 # RFC-2047 Q/B
+  try {
+    $t = Convert-FromMojibake $t             # reparar mojibake (seguro aunque no haya)
+  } catch {}
+  $t = ($t -replace '\s+', ' ').Trim()
+  return $t
+}
+
+function Get-HeaderValueJson {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]$GmailJson,
+    [Parameter(Mandatory=$true)][string]$Name
+  )
+  $obj = $null
+  if ($GmailJson -is [string]) {
+    try { $obj = $GmailJson | ConvertFrom-Json -Depth 100 } catch { return $null }
+  } else { $obj = $GmailJson }
+  if (-not $obj) { return $null }
+  $headers = $obj.payload.headers
+  if (-not $headers) { return $null }
+  $item = $headers | Where-Object { $_.name -ieq $Name } | Select-Object -First 1
+  if ($item) { return ($item.value) }
+  return $null
+}
+function Find-EmailsClean {
+  [CmdletBinding()]
+  param(
+    [string]$From,
+    [int]$Max = 10
+  )
+
+  $body = @{}
+  if ($From) { $body.from = $From }
+  $body.max = $Max
+
+  $resp = $null
+  try {
+    $resp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/search" `
+      -Method Post -ContentType "application/json" `
+      -Body ($body | ConvertTo-Json)
+  } catch {
+    try {
+      $resp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/list" `
+        -Method Post -ContentType "application/json" `
+        -Body ($body | ConvertTo-Json)
+    } catch {
+      throw "No pude obtener lista desde /gmail/search ni /gmail/list en :8088"
+    }
+  }
+
+  $items = @()
+  $msgs  = @()
+  if     ($resp -is [System.Array]) { $msgs = $resp }
+  elseif ($resp.PSObject -and $resp.PSObject.Properties['messages']) { $msgs = $resp.messages }
+  else { $msgs = @($resp) }
+
+  foreach ($m in $msgs) {
+    $id = $null
+    if     ($m -is [string]) { $id = $m }
+    elseif ($m.PSObject -and $m.PSObject.Properties['id']) { $id = $m.id }
+    else { continue }
+
+    # Traer detalle
+    $full = Get-MimeById -Id $id
+
+    # $obj (si es string JSON utilizamos parser tolerante)
+    $obj = $null
+    if ($full -is [string]) {
+      $s = $full.TrimStart()
+      if ($s.StartsWith('{')) { $obj = ConvertFrom-JsonAny $full }
+    } elseif ($full) {
+      $obj = $full
+    }
+
+    # Intentar obtener MIME crudo (del objeto o extrayendo de string)
+    $rawMime = $null
+    if ($obj -and $obj.PSObject) {
+      if     ($obj.PSObject.Properties['mime']) { $rawMime = [string]$obj.mime }
+      elseif ($obj.PSObject.Properties['raw'])  { $rawMime = [string]$obj.raw }
+    }
+    if (-not $rawMime -and $full -is [string]) {
+      if ($full -match '"raw"\s*:\s*"([^"]+)"') {
+        try {
+          $bytes = Convert-FromBase64Url $Matches[1]
+          # el MIME suele ser ASCII con encoded-words; usar UTF8 no rompe
+          $rawMime = [System.Text.Encoding]::UTF8.GetString($bytes)
+        } catch {}
+      } elseif ($full -match '"mime"\s*:\s*"([^"]+)"') {
+        $rawMime = $Matches[1]
+      }
+    }
+
+    # Headers: del JSON profundo si hay objeto, si no, desde MIME si lo logramos
+    $fromRaw    = $null
+    $subjectRaw = $null
+    if ($obj) {
+      try { $fromRaw    = Get-HeaderValueJsonDeep -GmailJson $obj -Name 'From' }    catch {}
+      try { $subjectRaw = Get-HeaderValueJsonDeep -GmailJson $obj -Name 'Subject' } catch {}
+    }
+    if (-not $fromRaw -and $rawMime)    { $fromRaw    = Get-HeaderValueMimeText -MimeText $rawMime -Name 'From' }
+    if (-not $subjectRaw -and $rawMime) { $subjectRaw = Get-HeaderValueMimeText -MimeText $rawMime -Name 'Subject' }
+
+    $from    = Fix-HeaderText $fromRaw
+    $subject = Fix-HeaderText $subjectRaw
+
+  
+  if (-not $from    -and $m -and $m.PSObject -and $m.PSObject.Properties['from']    -and $m.from)    { $from    = Fix-HeaderText $m.from }
+  if (-not $subject -and $m -and $m.PSObject -and $m.PSObject.Properties['subject'] -and $m.subject) { $subject = Fix-HeaderText $m.subject }
+# override si siguen vacíos: intenta en JSON/MIME con función tolerante
+  if (-not $from -or -not $subject) {
+    $fromTry    = Get-HeaderValueFromAny -GmailJson $obj -MimeText $rawMime -Name 'From'
+    $subjectTry = Get-HeaderValueFromAny -GmailJson $obj -MimeText $rawMime -Name 'Subject'
+    if (-not $from    -and $fromTry)    { $from    = Fix-HeaderText $fromTry }
+    if (-not $subject -and $subjectTry) { $subject = Fix-HeaderText $subjectTry }
+  }
+
+    # Preview: 1) snippet 2) HTML/TEXT embebido 3) decoder(MIME) 4) /gmail/get_body
+    $preview = $null
+    if ($obj -and $obj.PSObject -and $obj.PSObject.Properties['snippet'] -and $obj.snippet) {
+      $preview = $obj.snippet
+    if (-not $preview -and $m -and $m.PSObject -and $m.PSObject.Properties['snippet'] -and $m.snippet) { $preview = $m.snippet }
+    }
+
+    if (-not $preview -and $obj) {
+      try {
+        $alt = Get-GmailHtmlOrText -GmailJson $obj
+        if ($alt) {
+          if ($alt -match '<[^>]+>') {
+            $p = ($alt -replace '<[^>]+>', ' ') -replace '\s+', ' '
+          } else {
+            $p = ($alt -replace '\s+', ' ')
+          }
+          if ($p.Length -gt 160) { $p = $p.Substring(0,160) }
+          $preview = $p.Trim()
+        }
+      } catch {}
+    }
+
+    if (-not $preview -and $rawMime) {
+      try {
+        $decoded = Invoke-Decoder @{ mime = $rawMime }
+        if ($decoded) {
+          $p = ($decoded -replace '<[^>]+>', ' ') -replace '\s+', ' '
+          if ($p.Length -gt 160) { $p = $p.Substring(0,160) }
+          $preview = $p.Trim()
+        }
+      } catch {}
+    }
+
+    if (-not $preview) {
+      try {
+        $bodyResp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/get_body" `
+          -Method Post -ContentType "application/json" `
+          -Body (@{ id = $id } | ConvertTo-Json)
+        if     ($bodyResp.PSObject -and $bodyResp.PSObject.Properties['html_doc'] -and $bodyResp.html_doc) { $decoded = Invoke-Decoder @{ html_doc = $bodyResp.html_doc } }
+        elseif ($bodyResp.PSObject -and $bodyResp.PSObject.Properties['html']     -and $bodyResp.html)     { $decoded = Invoke-Decoder @{ html = $bodyResp.html } }
+        elseif ($bodyResp.PSObject -and $bodyResp.PSObject.Properties['text']     -and $bodyResp.text)     { $decoded = Invoke-Decoder @{ text = $bodyResp.text } }
+        if (-not $preview -and $decoded) {
+          $p = ($decoded -replace '<[^>]+>', ' ') -replace '\s+', ' '
+          if ($p.Length -gt 160) { $p = $p.Substring(0,160) }
+          $preview = $p.Trim()
+        }
+      } catch {}
+    }
+
+    $items += [pscustomobject]@{
+      id      = $id
+      from    = $from
+      subject = $subject
+      preview = $preview
+    }
+  }
+
+  return $items
+}function Convert-FromBase64Url {
+  param([Parameter(Mandatory=$true)][string]$InputString)
+  $s = $InputString.Replace('-', '+').Replace('_', '/')
+  switch ($s.Length % 4) { 2 { $s += '=='; break } 3 { $s += '='; break } default {} }
+  return [System.Convert]::FromBase64String($s)
+}
+
+function Get-HeaderValueJsonDeep {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)]$GmailJson,
+    [Parameter(Mandatory=$true)][string]$Name
+  )
+  $obj = $GmailJson
+  if ($obj -is [string] -and $obj.TrimStart().StartsWith('{')) {
+    try { $obj = $obj | ConvertFrom-Json -Depth 100 } catch { return $null }
+  }
+  if (-not $obj) { return $null }
+
+  $stack = New-Object System.Collections.Stack
+  if ($obj.PSObject.Properties['payload']) { $stack.Push($obj.payload) } else { $stack.Push($obj) }
+
+  while ($stack.Count -gt 0) {
+    $node = $stack.Pop()
+
+    if ($node -and $node.PSObject.Properties['headers']) {
+      $hit = $node.headers | Where-Object { $_.name -ieq $Name } | Select-Object -First 1
+      if ($hit) { return $hit.value }
+    }
+
+    if ($node -and $node.PSObject.Properties['parts'] -and $node.parts) {
+      foreach ($p in $node.parts) { $stack.Push($p) }
+    }
+  }
+  return $null
+}
+
+function Get-GmailHtmlOrText {
+  [CmdletBinding()]
+  param([Parameter(Mandatory=$true)]$GmailJson)
+
+  $obj = $GmailJson
+  if ($obj -is [string] -and $obj.TrimStart().StartsWith('{')) {
+    try { $obj = $obj | ConvertFrom-Json -Depth 100 } catch { return $null }
+  }
+  if (-not $obj) { return $null }
+
+  $bestHtml = $null
+  $bestText = $null
+
+  $stack = New-Object System.Collections.Stack
+  if ($obj.PSObject.Properties['payload']) { $stack.Push($obj.payload) } else { $stack.Push($obj) }
+
+  while ($stack.Count -gt 0) {
+    $node = $stack.Pop()
+    if (-not $node) { continue }
+
+    # data inline (si hay attachmentId, lo dejamos pasar: requeriría otra llamada)
+    if ($node.PSObject.Properties['mimeType'] -and $node.PSObject.Properties['body']) {
+      $mt = [string]$node.mimeType
+      $body = $node.body
+      if ($body.PSObject.Properties['data'] -and $body.data) {
+        try {
+          $bytes = Convert-FromBase64Url $body.data
+          $utf8  = [System.Text.Encoding]::UTF8.GetString($bytes)
+
+          if ($mt -like 'text/html*' -and -not $bestHtml) {
+            $bestHtml = $utf8
+          } elseif ($mt -like 'text/plain*' -and -not $bestText) {
+            $bestText = $utf8
+          }
+        } catch {}
+      }
+    }
+
+    if ($node.PSObject.Properties['parts'] -and $node.parts) {
+      foreach ($p in $node.parts) { $stack.Push($p) }
+    }
+  }
+
+  if ($bestHtml) { return $bestHtml }
+  if ($bestText) { return $bestText }
+  return $null
+}
+function ConvertFrom-JsonAny {
+  param([Parameter(Mandatory=$true)][string]$Json)
+  if (-not $Json) { return $null }
+  # Limpia NUL y controles problemáticos sin romper tabs/newlines
+  $clean = ($Json.ToCharArray() | Where-Object {
+    $code = [int]$_
+    return ($code -ge 9 -and $code -ne 11 -and $code -ne 12 -and $code -ge 32)
+  }) -join ''
+  try { return ($clean | ConvertFrom-Json -Depth 400) } catch {
+    try {
+      Add-Type -AssemblyName System.Web.Extensions -ErrorAction SilentlyContinue
+      $js = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+      $js.MaxJsonLength = [int]::MaxValue
+      return $js.DeserializeObject($clean)
+    } catch { return $null }
+  }
+}
+function Get-HeaderValueFromAny {
+  [CmdletBinding()]
+  param(
+    $GmailJson,
+    [string]$MimeText,
+    [Parameter(Mandatory=$true)][string]$Name
+  )
+  $val = $null
+  # JSON (si es string, parsea tolerante)
+  $obj = $GmailJson
+  if ($obj -is [string] -and $obj.TrimStart().StartsWith('{')) { $obj = ConvertFrom-JsonAny $obj }
+  if ($obj) {
+    try { $val = Get-HeaderValueJsonDeep -GmailJson $obj -Name $Name } catch {}
+    if (-not $val) {
+      try { if ($obj.payload -and $obj.payload.headersMap -and $obj.payload.headersMap.$Name) { $val = $obj.payload.headersMap.$Name } } catch {}
+      try { if ($obj.headersMap -and $obj.headersMap.$Name) { $val = $obj.headersMap.$Name } } catch {}
+    }
+  }
+  # MIME
+  if (-not $val -and $MimeText) { $val = Get-HeaderValueMimeText -MimeText $MimeText -Name $Name }
+  return $val
+}
+

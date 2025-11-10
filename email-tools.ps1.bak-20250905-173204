@@ -1,0 +1,151 @@
+﻿function Invoke-Decoder {
+  param([hashtable]$Body)
+
+  $uri = "http://localhost:8099/decode"
+  try {
+    $json = $Body | ConvertTo-Json -Depth 100
+    $resp = Invoke-WebRequest -Uri $uri -Method Post -ContentType "application/json; charset=utf-8" -Body $json
+    if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
+      return [string]$resp.Content
+    }
+  } catch {
+    Write-Verbose "Decoder no disponible: $_"
+  }
+  return $null
+}
+
+function Get-EmailHtml {
+  param([string]$Id)
+
+  chcp 65001 | Out-Null
+  $utf8 = [System.Text.UTF8Encoding]::new($false)
+  [Console]::OutputEncoding = $utf8
+  $OutputEncoding = $utf8
+
+  # 1) Obtén SIEMPRE el MIME completo
+  $mime = Invoke-RestMethod -Uri "http://localhost:8088/gmail/get" `
+    -Method Post -ContentType "application/json" `
+    -Body (@{ id = $Id } | ConvertTo-Json)
+
+  # 2) Decodifica vía decoder desde MIME
+  $decoded = Invoke-Decoder @{ mime = $mime }
+
+  # 3) Fallback: si algo falla, usa get_body pero pasando por el decoder
+  if (-not $decoded) {
+    $bodyResp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/get_body" `
+      -Method Post -ContentType "application/json" `
+      -Body (@{ id = $Id } | ConvertTo-Json)
+
+    if ($bodyResp.html_doc) { $decoded = Invoke-Decoder @{ html_doc = $bodyResp.html_doc } }
+    elseif ($bodyResp.html) { $decoded = Invoke-Decoder @{ html = $bodyResp.html } }
+    elseif ($bodyResp.text) { $decoded = Invoke-Decoder @{ text = $bodyResp.text } }
+  }
+
+  if (-not $decoded) { throw "No se pudo obtener contenido HTML para el mensaje $Id." }
+
+  $path = Join-Path $PWD ("email-{0}.html" -f $Id)
+  [System.IO.File]::WriteAllText($path, $decoded, $utf8)
+  Start-Process $path
+  return $path
+}
+
+function Open-LinkedInEmail {
+  $resp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/list" -Method Post -ContentType "application/json" -Body "{}"
+  $msg  = $resp.messages | Where-Object { $_.from -like "*LinkedIn*" -or $_.subject -like "*LinkedIn*" } | Select-Object -First 1
+  if (-not $msg) { throw "No encontré correos de LinkedIn en la primera página." }
+  Get-EmailHtml -Id $msg.id
+}
+function Open-LastEmail {
+  param(
+    [string]$From,
+    [string]$Subject,
+    [string]$Contains,
+    [int]$MaxPages = 3
+  )
+  $tok = $null
+  for ($i = 0; $i -lt $MaxPages; $i++) {
+    $body = @{}
+    if ($tok) { $body.pageToken = $tok }
+    $resp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/list" -Method Post -ContentType "application/json" -Body ($body | ConvertTo-Json)
+    $msgs = $resp.messages
+
+    if ($From)    { $msgs = $msgs | Where-Object { $_.from    -like "*$From*" } }
+    if ($Subject) { $msgs = $msgs | Where-Object { $_.subject -like "*$Subject*" } }
+    if ($Contains){ $msgs = $msgs | Where-Object { $_.snippet -like "*$Contains*" } }
+
+    if ($msgs -and $msgs.Count -gt 0) {
+      return Get-EmailHtml -Id $msgs[0].id
+    }
+    $tok = $resp.nextPageToken
+    if (-not $tok) { break }
+  }
+  throw "No encontré mensajes que coincidan."
+}
+
+function Find-Emails {
+  param(
+    [string]$From,
+    [string]$Subject,
+    [string]$Contains,
+    [int]$MaxPages = 3,
+    [int]$Max = 50
+  )
+  $tok = $null
+  $acc = @()
+  for ($i = 0; $i -lt $MaxPages -and $acc.Count -lt $Max; $i++) {
+    $body = @{}
+    if ($tok) { $body.pageToken = $tok }
+    $resp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/list" -Method Post -ContentType "application/json" -Body ($body | ConvertTo-Json)
+    $page = $resp.messages
+
+    if ($From)    { $page = $page | Where-Object { $_.from    -like "*$From*" } }
+    if ($Subject) { $page = $page | Where-Object { $_.subject -like "*$Subject*" } }
+    if ($Contains){ $page = $page | Where-Object { $_.snippet -like "*$Contains*" } }
+
+    $acc += $page
+    $tok = $resp.nextPageToken
+    if (-not $tok) { break }
+  }
+
+  $acc | Select-Object -First $Max `
+    id, date, from, subject, @{Name='preview'; Expression = { $_.snippet }}
+}
+
+
+# ==== ADDED: Get-MimeById & Get-HeaderValue (clean) ====
+function Get-MimeById {
+  [CmdletBinding()]
+  param([Parameter(Mandatory=$true)][string]$Id)
+
+  try {
+    chcp 65001 | Out-Null
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
+    [Console]::OutputEncoding = $utf8
+    $OutputEncoding = $utf8
+  } catch {}
+
+  $resp = Invoke-RestMethod -Uri "http://localhost:8088/gmail/get" `
+    -Method Post -ContentType "application/json" `
+    -Body (@{ id = $Id } | ConvertTo-Json)
+
+  if ($resp -is [string]) { return $resp }
+  elseif ($resp.mime) { return [string]$resp.mime }
+  elseif ($resp.raw)  { return [string]$resp.raw }
+  elseif ($resp.data) { return [string]$resp.data }
+  else { return ($resp | ConvertTo-Json -Depth 6) }
+}
+
+function Get-HeaderValue {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)][string]$Headers,
+    [Parameter(Mandatory=$true)][string]$Name
+  )
+  # Desplegar continuations (CRLF + WSP)
+  $unfold = $Headers -replace "(\r?\n)[ \t]+", ' '
+  $pattern = '(?mi)^\s*' + [regex]::Escape($Name) + '\s*:\s*(.*)$'
+  $m = [regex]::Match($unfold, $pattern)
+  if ($m.Success) { return ($m.Groups[1].Value.Trim()) }
+  return $null
+}
+# ==== END ADDED ====

@@ -1,0 +1,54 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>RMSG Private Expert Chat</title>
+  <style>
+    body { font-family: system-ui,-apple-system, Segoe UI, Roboto, Arial; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    .card { border: 1px solid #ddd; border-radius: 14px; padding: 1rem; margin-bottom: 1rem; }
+    input,button,textarea { font-size:16px; padding:.6rem .8rem; border-radius:10px; border:1px solid #ccc; width:100%; box-sizing:border-box; }
+    textarea { height:140px; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+    .sources { font-size:12px; color:#666; }
+    .answer { white-space: pre-wrap; }
+    .pill { display: inline-block; padding: .2rem .5rem; border: 1px solid #ccc; border-radius: 999px; margin-right: .4rem; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>RMSG Private Expert Chat (Local)</h1>
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>Bearer Token (paste yours)</label>
+        <input id="token" placeholder="Paste your personal token here"/>
+      </div>
+      <div>
+        <label>Namespace</label>
+        <input id="ns" value="industrial"/>
+      </div>
+    </div>
+    <div class="row" style="margin-top:1rem;">
+      <div>
+        <label>Message</label>
+        <textarea id="msg" placeholder="Ask about CFE timelines, kVA, m²↔ft², lease comps..."></textarea>
+      </div>
+      <div>
+        <label>Files to Ingest (optional)</label>
+        <input id="files" type="file" multiple/>
+        <button id="ingestBtn" type="button" style="margin-top:.5rem;">Ingest Selected Files</button>
+      </div>
+    </div>
+    <div style="margin-top:1rem; text-align:right;">
+      <button id="askBtn" type="button">Ask</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div id="answer" class="answer"></div>
+    <div id="sources" class="sources"></div>
+  </div>
+
+  <script src="/static/app.js?v=3"></script>
+</body>
+</html>

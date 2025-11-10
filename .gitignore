@@ -1,0 +1,67 @@
+﻿node_modules/
+npm-debug.log*
+pnpm-lock.yaml
+yarn.lock
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.*
+*.key
+*.pem
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+dist/
+build/
+coverage/
+*.log
+*.tmp
+docker-data/
+volumes/
+.qdrant/
+qdrant_data/
+logs/
+
+secrets/
+# === RMSG Private Chat ignores ===
+# Secretos ya están ignorados por 'secrets/' (confirmado en tu último commit)
+exports/
+exports_*.zip
+*.bak
+*.bak_*
+*.broken
+*.pre-envfile.bak
+*.csv
+*.txt
+*.json
+TravelSecrets/
+# === RMSG Private Chat ignores (safe) ===
+# Secretos
+secrets/
+
+# Entorno virtual y dependencias locales
+.venv/
+node_modules/
+
+# Exports y descargas
+exports/
+exports_*.zip
+downloads/
+
+# Respaldos y temporales
+*.bak
+*.bak_*
+*.broken
+*.pre-envfile.bak
+__pycache__/
+*.pyc
+
+# Binarios pesados que no deben ir al repo
+*.dll
+*.lib
+*.pyd
+*.exe
+*.bin
+*.zip

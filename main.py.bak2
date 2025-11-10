@@ -1,0 +1,38 @@
+﻿from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import os, logging
+
+logging.basicConfig(level=logging.INFO)
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+# Listado de rutas para diagnóstico opcional
+@app.get("/__routes")
+def __routes():
+    return [{"path": r.path, "methods": list(getattr(r, "methods", []) or [])} for r in app.routes]
+
+if os.path.isdir("static"):
+    app.mount("/static", StaticFiles(directory="static", html=True), name="static")
+
+# ⬇️ Importa el router de Gmail (primero raíz, luego fallback en server/)
+try:
+    from routes_gmail import router as gmail_router    # ABSOLUTO
+except ModuleNotFoundError:
+    from server.routes_gmail import router as gmail_router
+
+# Monta bajo /gmail
+app.include_router(gmail_router, prefix="/gmail")
+

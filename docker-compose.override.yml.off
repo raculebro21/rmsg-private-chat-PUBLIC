@@ -1,0 +1,7 @@
+﻿services:
+  api:
+    environment:
+      OLLAMA_URL: http://host.docker.internal:11434
+      QDRANT_URL: http://host.docker.internal:6333
+      CHAT_MODEL: qwen2.5:7b-instruct
+      EMBED_MODEL: nomic-embed-text
