@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+ï»¿from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 
@@ -18,9 +18,10 @@ def health():
 
 @app.get("/ready")
 def ready():
-    # Aquí podrías checar conexiones (Qdrant, etc.)
+    # AquÃ­ podrÃ­as checar conexiones (Qdrant, etc.)
     return {"status": "ready"}
 
 @app.get("/version")
 def version():
     return {"app": settings.app_name, "version": settings.version}
+
