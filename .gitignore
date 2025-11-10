@@ -35,3 +35,9 @@ content/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Local backups & downloads
+*bak_*
+downloads/
+server/requirements.txt
+requirements.txt
