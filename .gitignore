@@ -1,67 +1,37 @@
-﻿node_modules/
-npm-debug.log*
-pnpm-lock.yaml
-yarn.lock
-__pycache__/
-*.pyc
-.venv/
+﻿# Secrets
 .env
-.env.*
 *.key
 *.pem
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-dist/
-build/
-coverage/
-*.log
-*.tmp
-docker-data/
-volumes/
-.qdrant/
-qdrant_data/
-logs/
 
-secrets/
-# === RMSG Private Chat ignores ===
-# Secretos ya están ignorados por 'secrets/' (confirmado en tu último commit)
-exports/
-exports_*.zip
-*.bak
-*.bak_*
-*.broken
-*.pre-envfile.bak
-*.csv
-*.txt
-*.json
-TravelSecrets/
-# === RMSG Private Chat ignores (safe) ===
-# Secretos
-secrets/
-
-# Entorno virtual y dependencias locales
-.venv/
-node_modules/
-
-# Exports y descargas
-exports/
-exports_*.zip
-downloads/
-
-# Respaldos y temporales
-*.bak
-*.bak_*
-*.broken
-*.pre-envfile.bak
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/
 
-# Binarios pesados que no deben ir al repo
-*.dll
-*.lib
-*.pyd
-*.exe
-*.bin
-*.zip
+# Data / vectores / dumps / logs
+*.db
+data/
+vectorstore/
+.qdrant/
+tmp/
+logs/
+
+# Frontend/JS
+node_modules/
+.next/
+.out/
+
+# Builds
+dist/
+build/
+
+# Public mirror: NO documentos internos
+content/
+!content/README.md
+
+# OS/IDE
+.DS_Store
+Thumbs.db
+.vscode/
