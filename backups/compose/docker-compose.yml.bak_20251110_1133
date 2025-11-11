@@ -1,0 +1,14 @@
+﻿services:
+  api:
+    build: .
+    image: rmsg-private-chat-api
+    ports:
+      - "8088:8080"   # API -> health en 8088
+      - "8089:8080"
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./secrets:/app/secrets
+
+
+
+
