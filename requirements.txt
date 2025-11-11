@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+numpy
+pypdf
+pillow
+faiss-cpu>=1.7.4
+sentence-transformers<3
+# Google API deps
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client

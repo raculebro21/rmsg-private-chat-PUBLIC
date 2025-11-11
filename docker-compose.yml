@@ -1,22 +1,16 @@
 services:
   api:
-    build:
-      context: .
-      dockerfile: ./api/Dockerfile
-    image: rmsg-private-chat-api:latest
+    image: python:3.11-slim
     container_name: rmsg-api
-    env_file:
-      - ./.env
+    working_dir: /work
+    environment:
+      PYTHONPATH: /work
+    volumes:
+      - ./:/work
+    command: >
+      sh -lc "
+      pip install --no-cache-dir -r api/requirements.txt &&
+      python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+      "
     ports:
       - "8000:8000"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
-      interval: 30s
-      timeout: 3s
-      retries: 5
-    networks:
-      - rmsg_net
-networks:
-  rmsg_net:
-    driver: bridge

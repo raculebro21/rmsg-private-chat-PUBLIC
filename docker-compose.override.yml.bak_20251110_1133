@@ -1,0 +1,7 @@
+﻿services:
+  api:
+    environment:
+      - QDRANT_HOST=host.docker.internal
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION=rmsg_docs
+      - EMBED_MODEL=all-MiniLM-L6-v2
